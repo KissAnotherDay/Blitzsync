@@ -1,0 +1,62 @@
+name: Build and Release BlitzSync
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate next version
+        run: |
+          git fetch --tags --force
+          PREFIX="1.0"
+          LAST_TAG=$(git tag -l "v${PREFIX}.*" --sort=-v:refname | head -n 1)
+          if [ -z "$LAST_TAG" ]; then
+            NEXT_PATCH=0
+          else
+            LAST_PATCH=${LAST_TAG#v${PREFIX}.}
+            NEXT_PATCH=$((LAST_PATCH + 1))
+          fi
+          VERSION="${PREFIX}.${NEXT_PATCH}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "TAG=v${VERSION}" >> "$GITHUB_ENV"
+          echo "Next release version: v${VERSION}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Download dependencies
+        run: go mod tidy
+
+      - name: Build Windows and Linux binaries
+        run: |
+          mkdir -p dist
+          LDFLAGS="-s -w -X main.AppVersion=${VERSION}"
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/blitzsync-windows-amd64.exe .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="${LDFLAGS}" -o dist/blitzsync-linux-amd64 .
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="${LDFLAGS}" -o dist/blitzsync-linux-arm64 .
+          cd dist && sha256sum * > checksums.txt
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$TAG" dist/* --title "BlitzSync $TAG" --generate-notes
